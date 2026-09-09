@@ -3,6 +3,7 @@
 模型 / 航迹 / 配置 / 仿真 / 结果 / 缓存 六类资源。
 """
 import json
+import numpy as np
 import shutil
 import time
 import uuid
@@ -12,7 +13,12 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from app.config import CONFIGS_DIR, MODELS_DIR, RESULTS_DIR, TRAJECTORIES_DIR
-from app.models.schemas import ConfigRequest, SimulationRunRequest, TrajectoryRequest
+from app.models.schemas import (
+    ConfigRequest,
+    CoverageRequest,
+    SimulationRunRequest,
+    TrajectoryRequest,
+)
 from app.services import (
     config_generator,
     env_service,
@@ -20,7 +26,7 @@ from app.services import (
     pointcloud_parser,
     trajectory_generator,
 )
-
+from ..services.coverage import CoverageAnalyzer
 router = APIRouter(prefix="/api")
 
 # 模型注册表：model_id -> {filename, path, url, ext}（单进程内有效）
@@ -176,19 +182,18 @@ async def run_simulation(req: SimulationRunRequest):
         raise HTTPException(404, f"配置不存在：{req.config_id}")
 
     # 3. 校验模型（可选）
-    model_path = None
-    model_up = "z"
-    if req.scene_model_id:
-        m = MODEL_REGISTRY.get(req.scene_model_id)
-        if not m:
-            raise HTTPException(404, f"模型不存在：{req.scene_model_id}")
-        if m["ext"] != ".obj":
-            raise HTTPException(400, "仅 OBJ 格式模型可参与 HELIOS++ 仿真（GLTF/STL 仅用于三维展示）")
-        model_path = m["path"]
-        model_up = m.get("up", "z")
+    model_entries: list[tuple[str, str]] = []
+    if req.scene_model_ids:
+        for mid in req.scene_model_ids:
+            m = MODEL_REGISTRY.get(mid)
+            if not m:
+                raise HTTPException(404, f"模型不存在：{mid}")
+            if m["ext"] != ".obj":
+                raise HTTPException(400, f"模型「{m['filename']}」不是 OBJ 格式（仅 OBJ 可参与 HELIOS++ 仿真）")
+            model_entries.append((m["path"], m.get("up", "z")))
 
     # 4. 生成 scene + survey XML
-    scene_xml, scene_id = config_generator.generate_scene_xml(model_path, up=model_up)
+    scene_xml, scene_id = config_generator.generate_scene_xml(model_entries if model_entries else None)
     survey_xml = config_generator.generate_survey_xml(
         scene_xml_path=str(scene_xml),
         scene_id=scene_id,
@@ -321,3 +326,14 @@ async def clear_cache(cache_type: str):
             f.unlink()
             removed += 1
     return {"success": True, "type": cache_type, "removed": removed}
+# ==================== 点云覆盖度分析 ====================
+
+@router.post("/coverage/analyze")
+async def analyze_coverage(request: CoverageRequest):
+    """分析点云覆盖度：投影到 XY 平面网格，返回密度矩阵与统计指标。"""
+    try:
+        points = np.array(request.points)
+        analyzer = CoverageAnalyzer(grid_size=request.grid_size)
+        return analyzer.analyze(points)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

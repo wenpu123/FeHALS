@@ -10,6 +10,16 @@ export function useHeliosAPI() {
     fd.append('file', file)
     return api.post('/models/upload', fd).then((r) => r.data)
   }
+  // 批量上传：各文件独立 POST，一个失败不影响其余；返回 {ok: [...], fail: [...]}
+  const uploadModels = async (files) => {
+    const results = await Promise.allSettled(files.map((f) => uploadModel(f)))
+    const ok = [], fail = []
+    results.forEach((r, i) => {
+      if (r.status === 'fulfilled') ok.push(r.value)
+      else fail.push({ name: files[i].name, error: r.reason?.response?.data?.detail || r.reason?.message })
+    })
+    return { ok, fail }
+  }
   const listModels = () => api.get('/models').then((r) => r.data)
   const deleteModel = (id) => api.delete(`/models/${id}`).then((r) => r.data)
 
@@ -35,15 +45,20 @@ export function useHeliosAPI() {
   // ---- 结果 ----
   const getResult = (id) => api.get(`/results/${id}`).then((r) => r.data)
 
+  // ---- 覆盖度分析 ----
+  const analyzeCoverage = (points, gridSize = 50) =>
+    api.post('/coverage/analyze', { points, grid_size: gridSize }).then((r) => r.data)
+
   // ---- 缓存 ----
   const listCache = () => api.get('/cache').then((r) => r.data)
   const clearCache = (type) => api.delete(`/cache/${type}`).then((r) => r.data)
 
-// ---- 环境诊断 ----
+  // ---- 环境诊断 ----
   const diagnoseEnv = () => api.get('/env/diagnose').then((r) => r.data)
 
   return {
     uploadModel,
+    uploadModels,
     listModels,
     deleteModel,
     generateTrajectory,
@@ -54,6 +69,7 @@ export function useHeliosAPI() {
     getLogs,
     cancelSimulation,
     getResult,
+    analyzeCoverage,
     listCache,
     clearCache,
     diagnoseEnv,
